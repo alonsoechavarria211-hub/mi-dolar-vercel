@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Gráfico del Dólar</title>
+  <style>
+    body {
+      background: #0f1117;
+      color: #e6e9ef;
+      font-family: system-ui, sans-serif;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      margin: 0;
+      padding: 16px;
+    }
+    .caja {
+      width: 100%;
+      max-width: 820px;
+      background: #161922;
+      border: 1px solid #262b38;
+      border-radius: 10px;
+      padding: 16px;
+    }
+    .arriba {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+    .precio {
+      font-size: 28px;
+      font-weight: 700;
+    }
+    .verde { color: #16a34a; }
+    .rojo { color: #dc2626; }
+    .texto-suave {
+      font-size: 12px;
+      color: #9aa3b2;
+    }
+    .zona-grafico {
+      position: relative;
+      height: 380px;
+      width: 100%;
+    }
+  </style>
+</head>
+<body>
+  <div class="caja">
+    <div class="arriba">
+      <div>
+        <span id="precioActual" class="precio">Cargando...</span>
+        <span id="lineaBase" class="texto-suave">Línea base: --</span>
+      </div>
+      <div id="horaActualizacion" class="texto-suave">Se revisa cada 1 hora</div>
+    </div>
+    <div class="zona-grafico">
+      <canvas id="graficoDolar"></canvas>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script>
+    const UNA_HORA = 60 * 60 * 1000;
+    let grafico = null;
+
+    const pintarNumero = (num) =>
+      Number(num).toLocaleString('en-US', {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2
+      });
+
+    const pluginColores = {
+      id: 'pluginColores',
+      afterLayout(chart) {
+        const umbral = chart.options.plugins.lineaUmbral?.valor;
+        if (umbral == null) return;
+        const { ctx, chartArea, scales } = chart;
+        if (!chartArea || !scales.y) return;
+
+        const yLinea = scales.y.getPixelForValue(umbral);
+        const arriba = chartArea.top;
+        const abajo = chartArea.bottom;
+        if (abajo <= arriba) return;
+
+        const proporcion = Math.max(0, Math.min(1, (yLinea - arriba) / (abajo - arriba)));
+
+        const degradadoLinea = ctx.createLinearGradient(0, arriba, 0, abajo);
+        degradadoLinea.addColorStop(0, '#16a34a');
+        degradadoLinea.addColorStop(proporcion, '#16a34a');
+        degradadoLinea.addColorStop(proporcion, '#dc2626');
+        degradadoLinea.addColorStop(1, '#dc2626');
+
+        const degradadoRelleno = ctx.createLinearGradient(0, arriba, 0, abajo);
+        degradadoRelleno.addColorStop(0, 'rgba(22, 163, 74, 0.22)');
+        degradadoRelleno.addColorStop(proporcion, 'rgba(22, 163, 74, 0.04)');
+        degradadoRelleno.addColorStop(proporcion, 'rgba(220, 38, 38, 0.04)');
+        degradadoRelleno.addColorStop(1, 'rgba(220, 38, 38, 0.22)');
+
+        chart.data.datasets[0].borderColor = degradadoLinea;
+        chart.data.datasets[0].backgroundColor = degradadoRelleno;
+      },
+      afterDatasetsDraw(chart) {
+        const umbral = chart.options.plugins.lineaUmbral?.valor;
+        if (umbral == null) return;
+        const { ctx, chartArea, scales } = chart;
+        const yLinea = scales.y.getPixelForValue(umbral);
+        if (yLinea < chartArea.top || yLinea > chartArea.bottom) return;
+
+        ctx.save();
+        ctx.beginPath();
+        ctx.setLineDash([4, 4]);
+        ctx.strokeStyle = 'rgba(226, 232, 240, 0.65)';
+        ctx.moveTo(chartArea.left, yLinea);
+        ctx.lineTo(chartArea.right, yLinea);
+        ctx.stroke();
+
+        ctx.setLineDash([]);
+        const texto = pintarNumero(umbral);
+        ctx.font = '600 11px system-ui, sans-serif';
+        const ancho = ctx.measureText(texto).width + 10;
+        const alto = 18;
+
+        ctx.fillStyle = '#cbd5e1';
+        ctx.fillRect(chartArea.left - ancho - 4, yLinea - alto / 2, ancho, alto);
+
+        ctx.fillStyle = '#0f172a';
+        ctx.textAlign = 'right';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(texto, chartArea.left - 9, yLinea);
+        ctx.restore();
+      }
+    };
+
+    async function actualizarGrafico() {
+      try {
+        const resp = await fetch('/api/usd-cop');
+        const info = await resp.json();
+
+        const umbral = Number(info.threshold);
+        const etiquetas = info.points.map((p) => p.t);
+        const valores = info.points.map((p) => Number(p.v));
+        const ultimo = valores[valores.length - 1];
+
+        const elPrecio = document.getElementById('precioActual');
+        elPrecio.textContent = pintarNumero(ultimo);
+        elPrecio.className = `precio ${ultimo >= umbral ? 'verde' : 'rojo'}`;
+
+        document.getElementById('lineaBase').textContent = `Línea base: ${pintarNumero(umbral)}`;
+
+        const ahora = new Date().toLocaleTimeString('es-CO', {
+          hour: '2-digit',
+          minute: '2-digit'
+        });
+        document.getElementById('horaActualizacion').textContent = `Actualizado: ${ahora} · Cada 1h`;
+
+        if (!grafico) {
+          const ctx = document.getElementById('graficoDolar').getContext('2d');
+          grafico = new Chart(ctx, {
+            type: 'line',
+            plugins: [pluginColores],
+            data: {
+              labels: etiquetas,
+              datasets: [{
+                data: valores,
+                borderWidth: 2,
+                pointRadius: 0,
+                fill: true,
+                tension: 0.08
+              }]
+            },
+            options: {
+              responsive: true,
+              maintainAspectRatio: false,
+              animation: false,
+              layout: { padding: { left: 56 } },
+              plugins: {
+                legend: { display: false },
+                lineaUmbral: { valor: umbral }
+              },
+              scales: {
+                x: {
+                  grid: { color: 'rgba(148, 163, 184, 0.08)' },
+                  ticks: { color: '#9aa3b2', maxTicksLimit: 8 }
+                },
+                y: {
+                  position: 'left',
+                  grid: { color: 'rgba(148, 163, 184, 0.08)' },
+                  ticks: {
+                    color: '#9aa3b2',
+                    callback: (v) => pintarNumero(v)
+                  }
+                }
+              }
+            }
+          });
+        } else {
+          grafico.data.labels = etiquetas;
+          grafico.data.datasets[0].data = valores;
+          grafico.options.plugins.lineaUmbral.valor = umbral;
+          grafico.update();
+        }
+      } catch (e) {
+        console.error('Ups, algo falló:', e);
+      }
+    }
+
+    actualizarGrafico();
+    setInterval(actualizarGrafico, UNA_HORA);
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') actualizarGrafico();
+    });
+  </script>
+</body>
+</html>
